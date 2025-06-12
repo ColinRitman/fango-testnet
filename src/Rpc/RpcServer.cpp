@@ -108,6 +108,11 @@ std::unordered_map<std::string, RpcServer::RpcHandler<RpcServer::HandlerFunction
   { "/getpeers", { jsonMethod<COMMAND_RPC_GET_PEER_LIST>(&RpcServer::on_get_peer_list), true } },
   { "/paymentid", { jsonMethod<COMMAND_RPC_GEN_PAYMENT_ID>(&RpcServer::on_get_payment_id), true } },
 
+  // disabled in restricted rpc mode
+  { "/start_mining", { jsonMethod<COMMAND_RPC_START_MINING>(&RpcServer::on_start_mining), false } },
+  { "/stop_mining", { jsonMethod<COMMAND_RPC_STOP_MINING>(&RpcServer::on_stop_mining), false } },
+  { "/stop_daemon", { jsonMethod<COMMAND_RPC_STOP_DAEMON>(&RpcServer::on_stop_daemon), true } },
+
   // json rpc
   { "/json_rpc", { std::bind(&RpcServer::processJsonRpcRequest, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), true } }
 };
@@ -139,6 +144,9 @@ bool RpcServer::processJsonRpcRequest(const HttpRequest& request, HttpResponse& 
   using namespace JsonRpc;
 
   response.addHeader("Content-Type", "application/json");
+  if (!m_cors_domain.empty()) {
+        response.addHeader("Access-Control-Allow-Origin", m_cors_domain);
+  }
 
   JsonRpcRequest jsonRequest;
   JsonRpcResponse jsonResponse;
@@ -184,6 +192,16 @@ bool RpcServer::processJsonRpcRequest(const HttpRequest& request, HttpResponse& 
 
   response.setBody(jsonResponse.getBody());
   logger(TRACE) << "JSON-RPC response: " << jsonResponse.getBody();
+  return true;
+}
+
+bool RpcServer::restrictRPC(const bool is_restricted) {
+  m_restricted_rpc = is_restricted;
+  return true;
+}
+
+bool RpcServer::enableCors(const std::string domain) {
+  m_cors_domain = domain;
   return true;
 }
 
@@ -356,7 +374,7 @@ bool RpcServer::k_on_check_reserve_proof(const K_COMMAND_RPC_CHECK_RESERVE_PROOF
 		throw JsonRpc::JsonRpcError{ CORE_RPC_ERROR_CODE_WRONG_PARAM, "Failed to parse address " + req.address + '.' };
 	}
 
-	// parse sugnature
+	// parse signature
 	static constexpr char header[] = "ReserveProofV1";
 	const size_t header_len = strlen(header);
 	if (req.signature.size() < header_len || req.signature.substr(0, header_len) != header) {
@@ -431,7 +449,7 @@ bool RpcServer::k_on_check_reserve_proof(const K_COMMAND_RPC_CHECK_RESERVE_PROOF
 			return true;
 		}
 
-		// check if the address really received the fund
+		// check if the address really received the funds
 		Crypto::KeyDerivation derivation;
     if (!Crypto::generate_key_derivation(proof.shared_secret, Crypto::EllipticCurveScalar2SecretKey(Crypto::I), derivation))
     {
@@ -749,6 +767,10 @@ bool RpcServer::on_send_raw_tx(const COMMAND_RPC_SEND_RAW_TX::request& req, COMM
 }
 
 bool RpcServer::on_start_mining(const COMMAND_RPC_START_MINING::request& req, COMMAND_RPC_START_MINING::response& res) {
+  if (m_restricted_rpc) {
+        res.status = "Failed, restricted handle";
+        return false;
+  }
   AccountPublicAddress adr;
   if (!m_core.currency().parseAccountAddressString(req.miner_address, adr)) {
     res.status = "Failed, wrong address";
@@ -794,6 +816,10 @@ bool RpcServer::remotenode_check_incoming_tx(const BinaryArray& tx_blob) {
 */
 
 bool RpcServer::on_stop_mining(const COMMAND_RPC_STOP_MINING::request& req, COMMAND_RPC_STOP_MINING::response& res) {
+  if (m_restricted_rpc) {
+        res.status = "Failed, restricted handle";
+        return false;
+  }
   if (!m_core.get_miner().stop()) {
     res.status = "Failed, mining not stopped";
     return true;
@@ -803,6 +829,10 @@ bool RpcServer::on_stop_mining(const COMMAND_RPC_STOP_MINING::request& req, COMM
 }
 
 bool RpcServer::on_stop_daemon(const COMMAND_RPC_STOP_DAEMON::request& req, COMMAND_RPC_STOP_DAEMON::response& res) {
+  if (m_restricted_rpc) {
+        res.status = "Failed, restricted handle";
+        return false;
+  }
   if (m_core.currency().isTestnet()) {
     m_p2p.sendStopSignal();
     res.status = CORE_RPC_STATUS_OK;
@@ -812,7 +842,7 @@ bool RpcServer::on_stop_daemon(const COMMAND_RPC_STOP_DAEMON::request& req, COMM
   }
   return true;
 }
-
+	
 bool RpcServer::on_get_payment_id(const COMMAND_RPC_GEN_PAYMENT_ID::request& req, COMMAND_RPC_GEN_PAYMENT_ID::response& res) {
   std::string pid;
   try {
